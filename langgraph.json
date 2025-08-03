@@ -1,0 +1,15 @@
+{
+	"dependencies": ["."],
+	"graphs": {
+		"agent": "./agent.py:graph"
+	},
+	"env": "./.env",
+	"name": "Attach to LangGraph",
+	"type": "debugpy",
+	"request": "attach",
+	"connect": {
+		"host": "0.0.0.0",
+		"port": 5678
+	}
+}   
+
