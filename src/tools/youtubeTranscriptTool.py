@@ -3,6 +3,7 @@ from youtube_transcript_api import YouTubeTranscriptApi, FetchedTranscript
 from ..llm_provider import get_llm
 from typing import Optional
 from langchain_core.prompts import PromptTemplate
+from langchain_core.tools import tool
 
 
 class YouTubeTranscriptTool:
@@ -76,7 +77,7 @@ Instructions:
             print("Transcript is empty or not available.")
             return None
         prompt = self.prompt_template.format(
-            video_id=video_id, question=question, transcript=formatted_transcript
+            question=question, transcript=formatted_transcript
         )
         response = self.llm.invoke(prompt)
         if response:
@@ -85,6 +86,14 @@ Instructions:
             print("No response from the LLM.")
             return None
 
+youtube_tool = YouTubeTranscriptTool()
+
+@tool
+def youtube_transcript_tool(question: str) -> Optional[str]:
+    """
+    Tool to analyze a YouTube video and provide its transcript.
+    """
+    return youtube_tool.analyze_youtube_video(question)
 
 def main():
     """
