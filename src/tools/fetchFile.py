@@ -29,7 +29,7 @@ class FileFetcher:
             return ""
         
 fetcher = FileFetcher()
-@tool
+
 def fetch_file(task_id: str, file_name: str) -> str:
     """
     Fetch a file from the server based on task ID and file name.
