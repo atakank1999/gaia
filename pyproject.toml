@@ -14,6 +14,7 @@ dependencies = [
     "langgraph-api>=0.2.100",
     "langgraph-cli>=0.3.5",
     "openai-whisper>=20250625",
+    "openpyxl>=3.1.5",
     "pandas>=2.3.1",
     "requests>=2.32.4",
     "tavily-python>=0.7.10",

@@ -1,3 +1,4 @@
+import re
 from typing import Optional
 import numpy as np
 import pandas as pd
@@ -27,7 +28,7 @@ class SpreadsheetTool:
         else:
             return None
         return df
-    
+
     def _extract_metadata(self, df: pd.DataFrame) -> str:
         """
         Extracts metadata from the DataFrame.
@@ -45,7 +46,7 @@ class SpreadsheetTool:
             'sample_data': df.head().to_dict('records')
         }
         return str(metadata)
-    
+
     def query_spreadsheet(self, file_path: str, query: str) -> Optional[pd.DataFrame]:
 
         df = self._get_spreadsheet(file_path)
@@ -55,7 +56,7 @@ class SpreadsheetTool:
 
         code_prompt = PromptTemplate.from_template(
             template="""
-You are software engineer who is an expert in data analysis and manipulation.
+You are a software engineer who is an expert in data analysis and manipulation.
 You are provided with a spreadsheet metadata and a query to answer based on the data in that file.
 
 Metadata: {metadata}
@@ -64,13 +65,48 @@ File Path: {file_path}
 
 Your task is to generate code to answer the following query based on the provided spreadsheet data.
 Generate Python code that uses pandas to answer the query. Provide only the code, no explanations.
-Always return the result in a variable named '_result'.
+Your code must follow these rules:
+
+- Always filter the DataFrame first, then select the specific column(s) needed **before** applying aggregations.
+- Never call aggregation functions (mean, sum, min, max, etc.) on the entire DataFrame if it contains non-numeric columns.
+- Always use bracket notation for column access (`df["Column"]`), never dot notation (`df.Column`).
+- Always assign the final computed answer to a variable named `_result`.
+- The code must be executable without imports or comments, and must use the existing `df` variable.
+
+Make sure to use the DataFrame `df` that is already loaded from the file.
+Here is the rest of the program that your answer will be used which will be assigned to the code variable:
+```python
+import pandas as pd
+import numpy as np:
+        df = self._get_spreadsheet(file_path)
+        code = self.llm.invoke(code_prompt).content
+        safe = {{
+                'df': df,
+                'pd': pd,
+                'np': np,
+                'print': print,
+                'len': len,
+                'str': str,
+                'int': int,
+                'float': float,
+                'list': list,
+                'dict': dict,
+                'sum': sum,
+                'min': min,
+                'max': max,
+                'round': round
+            }}
+        exec(str(code), safe)
+        result = safe.get('_result', None)
+        return result
+        ```
             """
         )
 
         code_prompt = code_prompt.format(
             query=query,
-            data=df.to_dict(orient='records')
+            metadata=metadata,
+            file_path=file_path
         )
         code = self.llm.invoke(code_prompt).content
         safe = {
@@ -89,52 +125,85 @@ Always return the result in a variable named '_result'.
                 'max': max,
                 'round': round
             }
-        exec(str(code), safe)
-        result = safe.get('_result', None)
-        return result
+        if "```python" in code or "```" in code:
+            # Extract code between ```python and ``` or just between ```
+            pattern = r"```(?:python)?\s*(.*?)\s*```"
+            match = re.search(pattern, str(code), re.DOTALL)
+            if match:
+                formatted_code = match.group(1).strip()
+                exec(str(formatted_code), safe)
+            result = safe.get('_result', None)
+            return result
 
-    def analyze_spreadsheet(self, df: pd.DataFrame, query: str) -> Optional[pd.DataFrame]:
+    def analyze_spreadsheet(self, df: pd.DataFrame, question: str) -> Optional[str]:
         """
         Analyze a spreadsheet DataFrame based on a query.
         
         Args:
             df (pd.DataFrame): The DataFrame to analyze.
-            query (str): The query to answer.
-        
+            question (str): The question to answer.
+
         Returns:
-            pd.DataFrame: The result of the analysis.
+            str: The result of the analysis.
         """
         if df.empty:
             print("The DataFrame is empty.")
             return None
-        
+
         metadata = self._extract_metadata(df)
         prompt_template = PromptTemplate.from_template(
             template="""
 You are a data analyst tasked with analyzing a spreadsheet.
-You are provided with the metadata of the spreadsheet and a query to answer based on the data in that file.
+You are provided with the metadata of the spreadsheet and a question to answer based on the data in that file.
 Metadata: {metadata}
-Query: {query}
-Your task is to provide helpful insights about the spreadsheet based on the provided metadata and query.
+Question: {question}
+Your task is to provide helpful insights about the spreadsheet based on the provided metadata and question.
             """
         )
-        prompt = prompt_template.format(metadata=metadata, query=query)
+        prompt = prompt_template.format(metadata=metadata, question=question)
         response = self.llm.invoke(prompt)
         if response:
-            return pd.DataFrame(response.content)
+            return str(response.content)
         else:
             print("No response from the LLM.")
             return None
 
 
-
 spreadsheetTool = SpreadsheetTool()
 
 @tool
-def analyze_spreadsheet(df: pd.DataFrame, query: str) -> Optional[pd.DataFrame]:
+
+def analyze_spreadsheet(df: pd.DataFrame, query: str) -> Optional[str]:
+    """ Analyze a spreadsheet DataFrame based on a query.
+    Args:
+        df (pd.DataFrame): The DataFrame to analyze.
+        query (str): The query to answer.
+    Returns:
+        pd.DataFrame: The result of the analysis.
+    """
     return spreadsheetTool.analyze_spreadsheet(df, query)
 
 @tool
 def query_spreadsheet(file_path: str, query: str) -> Optional[pd.DataFrame]:
+    """ Query a spreadsheet file based on a query.
+    Args:
+        file_path (str): The path to the spreadsheet file.
+        query (str): The query to answer.
+    Returns:
+        pd.DataFrame: The result of the query.
+    """
     return spreadsheetTool.query_spreadsheet(file_path, query)
 
+def main():
+    file_path = "./files/7bd855d8-463d-4ed5-93ca-5fe35145f733.xlsx"
+    query = "Query spreadsheet to find the average value in Pinebrook?"
+    tool = SpreadsheetTool()
+    df = tool._get_spreadsheet(file_path)
+    if df is not None:
+        res = tool.query_spreadsheet(file_path=file_path, query=query)
+        if res is not None:
+            print(res)
+        else:
+            print("No results found for the query.")
+    else:
+        print("Failed to read the spreadsheet.")

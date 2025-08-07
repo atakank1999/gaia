@@ -20,17 +20,21 @@ class AudioTool:
             """
             )
 
-    def transcribe(self, audio_path: str) -> str:
+    def transcribe(self, audio_path: str) -> str|None:
         """
         Transcribe audio from the given path using the Whisper model.
         """
-        result = self.model.transcribe(audio_path)
-        if isinstance(result['text'], list):
-            return "\n".join(str(item) for item in result['text'])
-        else:
-            return str(result['text'])
+        try:
+            result = self.model.transcribe(audio_path)
+            if isinstance(result['text'], list):
+                return "\n".join(str(item) for item in result['text'])
+            else:
+                return str(result['text'])
+        except Exception as e:
+            print(f"Error occurred during transcription: {e}")
+            return None
 
-    def analyze(self, audio_path: str) -> str:
+    def analyze(self, audio_path: str, question: str) -> str:
         """
         Analyze audio from the given path using the Whisper model and LLM.
         """
@@ -38,9 +42,14 @@ class AudioTool:
         transcription = self.transcribe(audio_path)
         if not transcription:
             return "No transcription available."
-        question = "Hi, I was out sick from my classes on Friday, so I'm trying to figure out what I need to study for my Calculus mid-term next week. My friend from class sent me an audio recording of Professor Willowbrook giving out the recommended reading for the test, but my headphones are broken :(\n\nCould you please listen to the recording for me and tell me the page numbers I'm supposed to go over? I've attached a file called Homework.mp3 that has the recording. Please provide just the page numbers as a comma-delimited list. And please provide the list in ascending order."
-        prompt = self.prompt_template.format(question=question, transcription=transcription)
-        analysis = self.llm.invoke(prompt)
+        try:
+            transcription = transcription.strip()
+            prompt = self.prompt_template.format(question=question, transcription=transcription)
+            analysis = self.llm.invoke(prompt)
+        except Exception as e:
+            print(f"Error occurred during transcription processing: {e}")
+            return "Analysis failed due to an error."
+
         if not analysis:
             return "No analysis available."
         else:
@@ -48,17 +57,17 @@ class AudioTool:
 
 AudioAnalyzeTool = AudioTool()
 @tool
-def analyze_audio(audio_path: str) -> str:
+def analyze_audio(audio_path: str, question: str) -> str:
     """
     Analyze an audio file and return the transcription and analysis.
     """
-    return AudioAnalyzeTool.analyze(audio_path)
+    return AudioAnalyzeTool.analyze(audio_path, question)
 
 def main():
     """
     Main function to run the audio transcription tool.
     """
 
-    analysis = AudioAnalyzeTool.analyze("./files/1f975693-876d-457b-a649-393859e79bf3.mp3")
+    analysis = AudioAnalyzeTool.analyze("./files/1f975693-876d-457b-a649-393859e79bf3.mp3", "What is the main topic of the audio?")
     print("Analysis Result:")
     print(analysis)
