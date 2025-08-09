@@ -1,4 +1,5 @@
 import re
+import logging
 from typing import Optional
 import numpy as np
 import pandas as pd
@@ -19,21 +20,19 @@ class SpreadsheetTool:
             file_path (str): The path to the spreadsheet file.
         Returns:
             pd.DataFrame: The content of the spreadsheet.
-        Raises:
-            ValueError: If the file format is unsupported or if there is an error reading the file
         """
         ext = file_path.split(".")[-1].lower()
         try:
             if ext in ["xls", "xlsx"]:
-                df = pd.read_excel(file_path)
+                return pd.read_excel(file_path)
             elif ext in ["csv"]:
-                df = pd.read_csv(file_path)
+                return pd.read_csv(file_path)
             else:
                 raise ValueError(f"Unsupported file format: {ext}")
+
         except Exception as e:
-            print(f"Error reading spreadsheet: {e}")
-            return None
-        return df
+            logging.error(f"Error reading spreadsheet {file_path}: {e}", exc_info=True)
+            return pd.DataFrame()
 
     def _extract_metadata(self, df: pd.DataFrame) -> str:
         """
@@ -53,11 +52,23 @@ class SpreadsheetTool:
         }
         return str(metadata)
 
-    def query_spreadsheet(self, file_path: str, query: str) -> Optional[str]:
+    def query_spreadsheet(self, file_path: str, query: str) -> str:
+        """
+        Queries a spreadsheet file by generating code using llms based on the query.
+
+        Args:
+            file_path (str): The path to the spreadsheet file.
+            query (str): The query to execute on the spreadsheet data.
+
+        Returns:
+            str: The result of the query or an error message.
+        """
 
         df = self._get_spreadsheet(file_path)
         if df is None:
-            return "Error: Could not load spreadsheet file"
+            return "Could not load spreadsheet file"
+        if df.empty:
+            return "Spreadsheet is empty"
 
         metadata = self._extract_metadata(df)
 
@@ -141,7 +152,7 @@ return result
         try:
             exec(str(code), safe_env)
         except Exception as e:
-            return f"Error executing code: {e}"
+            return f"Error executing provided code: {e}"
         result = str(safe_env.get("_result", None))
         return result
 
@@ -181,15 +192,20 @@ spreadsheetTool = SpreadsheetTool()
 
 
 @tool
-def analyze_spreadsheet(df: pd.DataFrame, query: str) -> Optional[str]:
-    """Analyze a spreadsheet DataFrame based on a query.
+def analyze_spreadsheet(file_path: str, question: str) -> Optional[str]:
+    """Analyze a spreadsheet file based on a question.
     Args:
-        df (pd.DataFrame): The DataFrame to analyze.
-        query (str): The query to answer.
+        file_path (str): The path to the spreadsheet file.
+        question (str): The question to answer.
     Returns:
         pd.DataFrame: The result of the analysis.
     """
-    return spreadsheetTool.analyze_spreadsheet(df, query)
+    df = spreadsheetTool._get_spreadsheet(file_path)
+    if df is None:
+        return "Could not load spreadsheet file"
+    if df.empty:
+        return "Spreadsheet is empty"
+    return spreadsheetTool.analyze_spreadsheet(df, question)
 
 
 @tool

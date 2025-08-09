@@ -91,7 +91,11 @@ youtube_tool = YouTubeTranscriptTool()
 @tool
 def youtube_transcript_tool(question: str) -> Optional[str]:
     """
-    Tool to analyze a YouTube video and provide its transcript.
+    A tool to fetch the transcript of a YouTube video and analyze it using LLM based on the question.
+    Args:
+        question (str): The question containing the YouTube video URL and the query.
+    Returns:
+        str: The response from the YouTubeTranscriptTool.
     """
     return youtube_tool.analyze_youtube_video(question)
 

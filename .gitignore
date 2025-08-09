@@ -1,5 +1,6 @@
 .langgraph_api/
 files/
+tmp/
 run.py
 # Byte-compiled / optimized / DLL files
 __pycache__/
