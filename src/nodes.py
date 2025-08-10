@@ -1,4 +1,4 @@
-from typing import Dict, List, Literal, Optional, TypedDict
+from typing import Dict, List, Literal, Optional, TypedDict, cast
 from pydantic import BaseModel
 from typing_extensions import Annotated
 from langchain_core.messages import (
@@ -134,9 +134,31 @@ class ToolNodes:
         """
         Analyzes the spreadsheet file at the given location.
         """
-        tools = [analyze_spreadsheet, query_spreadsheet]
-        llm_with_spreadsheet_tools = self.llm.bind_tools(tools)
-        return {"messages": [llm_with_spreadsheet_tools.invoke(str(state))]}
+
+        class SpreadSheetTools(BaseModel):
+            tool: Literal["analyze_spreadsheet", "query_spreadsheet"]
+
+        structured_llm = self.llm.with_structured_output(SpreadSheetTools)
+        prompt = PromptTemplate.from_template(
+            """
+    You need to decide which tool to use for the spreadsheet: analyze_spreadsheet or query_spreadsheet.
+    You can find the detailed explanations of each tool below:
+    - analyze_spreadsheet: This tool is used for analyzing high-level metadata informations of the spreadsheet. An LLM is used to extract insights from the spreadsheet without directly interacting with the data.
+    - query_spreadsheet: This tool is used to gather more explicit information from the spreadsheet. If you need to run python code on the spreadsheet data, use this tool. This is the only tool that lets you interact with the spreadsheet data directly.
+
+    Make your decision based on the current context and user input.
+
+    Message History: {messages}
+"""
+        )
+        formatted_prompt = prompt.format(messages=state["messages"])
+        response = structured_llm.invoke(formatted_prompt)
+        response = cast(SpreadSheetTools, response)
+        message = AIMessage(
+            content=f"Choosing {response.tool}",
+            tool_calls=[{"name": response.tool, "args": {}, "id": str(len(state["tool_calls"]))}],
+        )
+        return {"tool_calls": "handle_spreadsheet", "messages": [message]}
 
     def query_spreadsheet_tool(self, state: GraphState):
         """
@@ -144,7 +166,7 @@ class ToolNodes:
         """
         file_location = state.get("file_location")
         query_result = query_spreadsheet.invoke(
-            {"file_path": file_location, "question": state.get("question")}
+            {"file_path": file_location, "query": state.get("question")}
         )
         msg = ToolMessage(content=query_result, tool_call_id=len(state["tool_calls"]))
         return {"tool_calls": "query_spreadsheet", "messages": [msg]}
@@ -247,7 +269,8 @@ def main():
         }
     )
     result = workflow.invoke(initial_state)
-    print(result)  # This will print the final state after processing the graph
+    for message in result["messages"]:
+        print(message.content)
 
 
 if __name__ == "__main__":
