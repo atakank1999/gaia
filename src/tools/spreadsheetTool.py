@@ -98,7 +98,7 @@ import pandas as pd
 import numpy as np:
 df = self._get_spreadsheet(file_path)
 code = self.llm.invoke(code_prompt).content
-safe = {
+safe = {{
         "df": df,
         "pd": pd,
         "np": np,
@@ -113,7 +113,7 @@ safe = {
         "min": min,
         "max": max,
         "round": round
-    }
+    }}
 exec(str(code), safe)
 result = safe.get("_result", None)
 return result
