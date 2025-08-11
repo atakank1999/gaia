@@ -1,7 +1,7 @@
 {
 	"dependencies": ["."],
 	"graphs": {
-		"agent": "./src/nodes.py:workflow"
+		"agent": "./src/workflow.py:workflow"
 	},
 	"env": "./.env",
 	"name": "Attach to LangGraph",

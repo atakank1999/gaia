@@ -1,15 +1,14 @@
 from typing import Dict, List, Literal, Optional, TypedDict, cast
+from langchain_tavily import TavilySearch
 from pydantic import BaseModel
 from typing_extensions import Annotated
 from langchain_core.messages import (
     AnyMessage,
     HumanMessage,
-    BaseMessage,
     ToolMessage,
     AIMessage,
 )
 from langgraph.graph import StateGraph, add_messages, START, END
-from langgraph.prebuilt import ToolNode
 from langchain_core.prompts import PromptTemplate
 from src.llm_provider import get_llm
 from src.tools.audioTool import analyze_audio
@@ -40,18 +39,148 @@ class Nodes:
 
     def __init__(self):
         self.llm = get_llm()
+    
+    def entry(self,state:GraphState):
+        return
 
-    def chatbot(self, state: GraphState):
-        res = self.llm.invoke(str(state))
-        return {"messages": [res]}
+    def assess_response(self, state: GraphState):
+        """
+        Assess the response from the LLM and decide whether to continue or end the conversation.
+        """
+        last_message = state["messages"][-1]
+        prompt_template = PromptTemplate.from_template(
+            """
+You are the Response Assessor in an AI Agent workflow. Your job is to judge the AGENT_RESPONSE below and decide the next action. If you find the response satisfactory, you should return "continue". If not, you should return "retry".Evaluate the response based on the correctness, grounding, relevance and completeness of the response. You will be given the context, agent response and the initial user message question as inputs.
+##Inputs
+- AGENT_RESPONSE: {last_message}
+- USER_MESSAGE: {question}
+- CONTEXT: {context}
+            """
+        )
+        prompt = prompt_template.format(
+            last_message=last_message,
+            question=state["question"],
+            context=state["messages"][:-1],
+        )
+
+        class Response(BaseModel):
+            answer: Literal["continue", "retry"]
+
+        structured_llm = self.llm.with_structured_output(Response)
+        response = cast(Response, structured_llm.invoke(prompt))
+        if response.answer == "continue":
+            return {"messages": [AIMessage(content="continue")]}
+        else:
+            return {"messages": [AIMessage(content="retry")]}
+
+    def youtube_transcript(self, state: GraphState):
+        """
+        Fetch the YouTube transcript based on the question in the state.
+        """
+        question = state.get("question")
+        res = youtube_transcript_tool.invoke({"question": question})
+        if not question:
+            return {
+                "messages": [
+                    AIMessage(content="No question provided for YouTube transcript.")
+                ]
+            }
+        return {"messages": [AIMessage(content=res)]}
+
+    def news_search(self, state: GraphState):
+        """
+        Perform a news search based on the question in the state.
+        """
+        question = state.get("question")
+        if not question:
+            return {
+                "messages": [AIMessage(content="No question provided for news search.")]
+            }
+
+        res = news_search.invoke({"question": question})
+        return {"messages": [AIMessage(content=res)]}
+
+    def academic_search(self, state: GraphState):
+        """
+        Perform an academic search based on the question in the state.
+        """
+        question = state.get("question")
+        if not question:
+            return {
+                "messages": [
+                    AIMessage(content="No question provided for academic search.")
+                ]
+            }
+
+        res = academic_search.invoke({"question": question})
+        return {"messages": [AIMessage(content=res)]}
+
+    def wikipedia_search(self, state: GraphState):
+        """
+        Perform a Wikipedia search based on the question in the state.
+        """
+        question = state.get("question")
+        if not question:
+            return {
+                "messages": [
+                    AIMessage(content="No question provided for Wikipedia search.")
+                ]
+            }
+
+        res = wikipedia_search.invoke({"question": question})
+        return {"messages": [AIMessage(content=res)]}
+
+    def web_search(self, state: GraphState):
+        """
+        Perform a web search based on the question in the state.
+        """
+        question = state.get("question")
+        if not question:
+            return {
+                "messages": [AIMessage(content="No question provided for web search.")]
+            }
+        search = TavilySearch().invoke({"query": question})
+        return {"messages": [AIMessage(content=search)]}
+
+    def select_node(self, state: GraphState):
+        class Routes(BaseModel):
+            route: Literal[
+                "news_search",
+                "academic_search",
+                "wikipedia_search",
+                "web_search",
+                "youtube_transcript",
+            ]
+
+        llm = self.llm.with_structured_output(Routes)
+        prompt = """
+You are a router. Based on the user's question and context, determine the appropriate search route to take. The available routes are: news_search, academic_search, wikipedia_search, web_search, youtube_transcript.
+User question: {question}
+Context: {context}
+"""
+        formatted_prompt = prompt.format(
+            question=state["question"], context=state["messages"][:-1]
+        )
+        response = cast(Routes, llm.invoke(formatted_prompt))
+        return {"messages": [AIMessage(content=response.route)]}
 
 
 class EdgeConditions:
+    def __init__(self):
+        self.llm = get_llm()
+
+    def non_tool_node_condition(self,state:GraphState) -> str:
+        """
+        Checks if the state is in a condition to proceed without using a tool.
+        """
+        last_message = state.get("messages")[-1]
+        return str(last_message.content)
+
     def file_fetch_condition(self, state: GraphState) -> str:
         """
         Checks if the state is in a condition to fetch a file.
         """
-        return "file_fetcher" if state.get("file_name") is not None else "chatbot"
+        return "file_fetcher" if state.get("file_name") is not None else "select_node"
 
     def file_tool_decider(self, state: GraphState) -> str:
         """
@@ -64,7 +193,7 @@ class EdgeConditions:
                 return "analyze_audio"
             elif suffix in ["xlsx", "csv"]:
                 return "handle_spreadsheet"
-        return "chatbot"
+        return "select_node"
 
     def spreadsheet_tool_decider(self, state: GraphState) -> str:
         """
@@ -77,7 +206,16 @@ class EdgeConditions:
                     return "query_spreadsheet"
                 else:
                     return "analyze_spreadsheet"
-        return "chatbot"
+        return "select_node"
+
+    def assessment_condition(self,state:GraphState) -> str:
+        """
+        Checks if the state is in a condition to assess the response.
+        """
+        last_message = state.get("messages")[-1]
+        if isinstance(last_message, AIMessage) and last_message.content == "retry":
+            return "entry"
+        return "END"
 
 
 class ToolNodes:
@@ -156,7 +294,9 @@ class ToolNodes:
         response = cast(SpreadSheetTools, response)
         message = AIMessage(
             content=f"Choosing {response.tool}",
-            tool_calls=[{"name": response.tool, "args": {}, "id": str(len(state["tool_calls"]))}],
+            tool_calls=[
+                {"name": response.tool, "args": {}, "id": str(len(state["tool_calls"]))}
+            ],
         )
         return {"tool_calls": "handle_spreadsheet", "messages": [message]}
 
@@ -191,14 +331,37 @@ edge_conditions = EdgeConditions()
 
 graph_builder = StateGraph(GraphState)
 graph_builder.add_node(
-    "chatbot",
-    nodes.chatbot,
+    "entry",
+    nodes.entry,
+)
+graph_builder.add_node(
+    "assessment",
+    nodes.assess_response,
+)
+graph_builder.add_node(
+    "youtube_transcript",
+    nodes.youtube_transcript
+)
+graph_builder.add_node(
+    "academic_search",
+    nodes.academic_search,
+)
+graph_builder.add_node(
+    "wikipedia_search",
+    nodes.wikipedia_search,
+)
+graph_builder.add_node(
+    "web_search",
+    nodes.web_search,
+)
+graph_builder.add_node(
+    "news_search",
+    nodes.news_search,
 )
 graph_builder.add_node(
     "file_fetcher",
     tool_nodes.file_fetcher_tool,
 )
-
 graph_builder.add_node(
     "analyze_audio",
     tool_nodes.analyze_audio,
@@ -215,11 +378,15 @@ graph_builder.add_node(
     "query_spreadsheet",
     tool_nodes.query_spreadsheet_tool,
 )
+graph_builder.add_node(
+    "select_node",
+    nodes.select_node,
+)
 
 graph_builder.add_conditional_edges(
-    START,
+    "entry",
     edge_conditions.file_fetch_condition,
-    {"file_fetcher": "file_fetcher", "chatbot": "chatbot"},
+    {"file_fetcher": "file_fetcher", "select_node": "select_node"},
 )
 
 graph_builder.add_conditional_edges(
@@ -228,26 +395,46 @@ graph_builder.add_conditional_edges(
     {
         "analyze_audio": "analyze_audio",
         "handle_spreadsheet": "handle_spreadsheet",
-        "chatbot": "chatbot",
+        "select_node": "select_node",
     },
 )
-
 graph_builder.add_conditional_edges(
     "handle_spreadsheet",
     edge_conditions.spreadsheet_tool_decider,
     {
         "query_spreadsheet": "query_spreadsheet",
         "analyze_spreadsheet": "analyze_spreadsheet",
-        "chatbot": "chatbot",
+        "handle_spreadsheet": "handle_spreadsheet",
     },
 )
-graph_builder.add_edge("analyze_audio", "chatbot")
-graph_builder.add_edge("analyze_spreadsheet", "chatbot")
-graph_builder.add_edge("query_spreadsheet", "chatbot")
+graph_builder.add_conditional_edges(
+    "select_node",
+    edge_conditions.non_tool_node_condition,
+    {
+        "news_search": "news_search",
+        "academic_search": "academic_search",
+        "wikipedia_search": "wikipedia_search",
+        "web_search": "web_search",
+        "youtube_transcript": "youtube_transcript",
+    },
+)
+graph_builder.add_edge(START, "entry")
+graph_builder.add_edge("analyze_audio", "assessment")
+graph_builder.add_edge("analyze_spreadsheet", "assessment")
+graph_builder.add_edge("query_spreadsheet", "assessment")
+graph_builder.add_edge("web_search", "assessment")
+graph_builder.add_edge("wikipedia_search", "assessment")
+graph_builder.add_edge("youtube_transcript", "assessment")
+graph_builder.add_edge("academic_search", "assessment")
+graph_builder.add_edge("news_search", "assessment")
 
-graph_builder.add_edge(
-    "chatbot",
-    END,
+graph_builder.add_conditional_edges(
+    "assessment",
+    edge_conditions.assessment_condition,
+    {
+        "entry": "entry",
+        "END": END
+    }
 )
 workflow = graph_builder.compile()
 
