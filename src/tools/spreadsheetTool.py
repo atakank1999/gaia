@@ -154,7 +154,14 @@ return result
         except Exception as e:
             return f"Error executing provided code: {e}"
         result = str(safe_env.get("_result", None))
-        return result
+        answer = f"""
+```python
+{code}
+```
+The code is executed to answer the question where the DataFrame `df` is the downloaded spreadsheet.
+The output of the code is: {result}
+"""
+        return answer
 
     def analyze_spreadsheet(self, df: pd.DataFrame, question: str) -> str:
         """
