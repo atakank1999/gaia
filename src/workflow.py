@@ -16,6 +16,8 @@ from src.tools.spreadsheetTool import analyze_spreadsheet, query_spreadsheet
 from src.tools.fetchFile import fetch_file
 from src.tools.webSearchTool import news_search, academic_search, wikipedia_search
 from src.tools.youtubeTranscriptTool import youtube_transcript_tool
+from prompts import system_prompt
+from langchain_core.prompts import ChatPromptTemplate
 
 
 def append_reducer(left: List[str], right: str) -> List[str]:
@@ -39,9 +41,32 @@ class Nodes:
 
     def __init__(self):
         self.llm = get_llm()
-    
-    def entry(self,state:GraphState):
+
+    def entry(self, state: GraphState):
         return
+
+    def generate_answer(self, state: GraphState):
+        """
+        Generate an answer based on the question in the state and the context.
+        """
+        prompt_template = PromptTemplate.from_template(
+"""
+You will be given two inputs question and the state of the conversation as context. To answer the question you need to ground your answer based on the context provided. Keep your answer concise and relevant. If you find the context insufficient, you should ask for clarification.
+
+##Inputs
+- QUESTION: {question}
+- CONTEXT: {context}
+"""
+)
+
+        prompt = prompt_template.format(
+            question=state["question"],
+            context=state["messages"]
+        )
+
+        res = self.llm.invoke(prompt)
+
+        return {"messages": [res]}
 
     def assess_response(self, state: GraphState):
         """
@@ -169,7 +194,7 @@ class EdgeConditions:
     def __init__(self):
         self.llm = get_llm()
 
-    def non_tool_node_condition(self,state:GraphState) -> str:
+    def non_tool_node_condition(self, state: GraphState) -> str:
         """
         Checks if the state is in a condition to proceed without using a tool.
         """
@@ -208,7 +233,7 @@ class EdgeConditions:
                     return "analyze_spreadsheet"
         return "select_node"
 
-    def assessment_condition(self,state:GraphState) -> str:
+    def assessment_condition(self, state: GraphState) -> str:
         """
         Checks if the state is in a condition to assess the response.
         """
@@ -335,13 +360,15 @@ graph_builder.add_node(
     nodes.entry,
 )
 graph_builder.add_node(
+    "generate_answer",
+    nodes.generate_answer
+)
+
+graph_builder.add_node(
     "assessment",
     nodes.assess_response,
 )
-graph_builder.add_node(
-    "youtube_transcript",
-    nodes.youtube_transcript
-)
+graph_builder.add_node("youtube_transcript", nodes.youtube_transcript)
 graph_builder.add_node(
     "academic_search",
     nodes.academic_search,
@@ -419,22 +446,18 @@ graph_builder.add_conditional_edges(
     },
 )
 graph_builder.add_edge(START, "entry")
-graph_builder.add_edge("analyze_audio", "assessment")
-graph_builder.add_edge("analyze_spreadsheet", "assessment")
-graph_builder.add_edge("query_spreadsheet", "assessment")
-graph_builder.add_edge("web_search", "assessment")
-graph_builder.add_edge("wikipedia_search", "assessment")
-graph_builder.add_edge("youtube_transcript", "assessment")
-graph_builder.add_edge("academic_search", "assessment")
-graph_builder.add_edge("news_search", "assessment")
+graph_builder.add_edge("analyze_audio", "generate_answer")
+graph_builder.add_edge("analyze_spreadsheet", "generate_answer")
+graph_builder.add_edge("query_spreadsheet", "generate_answer")
+graph_builder.add_edge("web_search", "generate_answer")
+graph_builder.add_edge("wikipedia_search", "generate_answer")
+graph_builder.add_edge("youtube_transcript", "generate_answer")
+graph_builder.add_edge("academic_search", "generate_answer")
+graph_builder.add_edge("news_search", "generate_answer")
+graph_builder.add_edge("generate_answer", "assessment")
 
 graph_builder.add_conditional_edges(
-    "assessment",
-    edge_conditions.assessment_condition,
-    {
-        "entry": "entry",
-        "END": END
-    }
+    "assessment", edge_conditions.assessment_condition, {"entry": "entry", "END": END}
 )
 workflow = graph_builder.compile()
 
