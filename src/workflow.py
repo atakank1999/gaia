@@ -1,3 +1,4 @@
+import os
 from typing import Dict, List, Literal, Optional, TypedDict, cast
 from langchain_tavily import TavilySearch
 from pydantic import BaseModel
@@ -98,6 +99,9 @@ You are the Response Assessor in an AI Agent workflow. Your job is to judge the 
         structured_llm = self.llm.with_structured_output(Response)
         response = cast(Response, structured_llm.invoke(prompt))
         if response.answer == "continue":
+            for root, dirs, files in os.walk("./tmp"):
+                for file in files:
+                    os.remove(os.path.join(root, file))
             return {"messages": [AIMessage(content="continue")]}
         else:
             return {"messages": [AIMessage(content="retry")]}
@@ -532,11 +536,11 @@ def main():
         questions = json.loads(questions)
     initial_state = GraphState(
         {
-            "messages": [HumanMessage(content=questions[4]["question"])],
+            "messages": [HumanMessage(content=questions[6]["question"])],
             "tool_calls": [],
-            "question": questions[4]["question"],
-            "task_id": questions[4]["task_id"],
-            "file_name": questions[4]["file_name"],
+            "question": questions[6]["question"],
+            "task_id": questions[6]["task_id"],
+            "file_name": questions[6]["file_name"],
             "file_location": None,
             "max_tries": 3,
             "retries": 0,
