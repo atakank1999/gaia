@@ -12,20 +12,13 @@ from langchain_core.messages import HumanMessage
 DEFAULT_API_URL = "https://agents-course-unit4-scoring.hf.space"
 
 
-def run_and_submit_all(profile: gr.OAuthProfile | None):
+def run_and_submit_all():
     """
     Fetches all questions, runs the BasicAgent on them, submits all answers,
     and displays the results.
     """
     # --- Determine HF Space Runtime URL and Repo URL ---
     space_id = os.getenv("SPACE_ID")  # Get the SPACE_ID for sending link to the code
-
-    if profile:
-        username = f"{profile.username}"
-        print(f"User logged in: {username}")
-    else:
-        print("User not logged in.")
-        return "Please Login to Hugging Face with the button.", None
 
     api_url = DEFAULT_API_URL
     questions_url = f"{api_url}/questions"
@@ -80,8 +73,11 @@ def run_and_submit_all(profile: gr.OAuthProfile | None):
                 "task_id": task_id,
                 "file_name": item.get("file_name"),
                 "file_location": None,
+                "retries": 0,
+                "max_tries": 2,
             })
             submitted_answer = agent.invoke(initial_state)
+            submitted_answer = submitted_answer["messages"][-1].content
             answers_payload.append(
                 {"task_id": task_id, "submitted_answer": submitted_answer}
             )
@@ -107,6 +103,7 @@ def run_and_submit_all(profile: gr.OAuthProfile | None):
         return "Agent did not produce any answers to submit.", pd.DataFrame(results_log)
 
     # 4. Prepare Submission
+    username = "atakank"
     submission_data = {
         "username": username.strip(),
         "agent_code": agent_code,
@@ -174,8 +171,6 @@ with gr.Blocks() as demo:
         This space provides a basic setup and is intentionally sub-optimal to encourage you to develop your own, more robust solution. For instance for the delay process of the submit button, a solution could be to cache the answers and submit in a seperate action or even to answer the questions in async.
         """
     )
-
-    gr.LoginButton()
 
     run_button = gr.Button("Run Evaluation & Submit All Answers")
 
