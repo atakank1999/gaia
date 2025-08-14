@@ -26,10 +26,10 @@ class AudioTool:
         """
         try:
             result = self.model.transcribe(audio_path)
-            if isinstance(result['text'], list):
-                return "\n".join(str(item) for item in result['text'])
-            else:
-                return str(result['text'])
+            if result["segments"]:
+                segments = result["segments"]
+                formatted_segments = "\n".join(f"[{item['start']:.2f}s - {item['end']:.2f}s] {item['text']}" for item in segments) # type: ignore
+                return formatted_segments
         except Exception as e:
             print(f"Error occurred during transcription: {e}")
             return None
@@ -68,6 +68,6 @@ def main():
     Main function to run the audio transcription tool.
     """
 
-    analysis = AudioAnalyzeTool.analyze("./files/1f975693-876d-457b-a649-393859e79bf3.mp3", "What is the main topic of the audio?")
+    analysis = AudioAnalyzeTool.analyze("./tmp/1f975693-876d-457b-a649-393859e79bf3.mp3", "What is the main topic of the audio?")
     print("Analysis Result:")
     print(analysis)

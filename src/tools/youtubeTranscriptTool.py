@@ -4,6 +4,8 @@ from ..llm_provider import get_llm
 from typing import Optional
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import tool
+from pytubefix import YouTube
+from .audioTool import AudioTool
 
 
 class YouTubeTranscriptTool:
@@ -59,6 +61,23 @@ Instructions:
             )
         return "\n".join(formatted_transcript)
 
+    def _download_youtube_audio(self, video_id: str) -> Optional[str]:
+        """
+        Download the audio from a YouTube video.
+        """
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        yt = YouTube(url)
+        try:
+            ys = yt.streams.get_audio_only()
+            if ys:
+                audio_file = ys.download(output_path="./tmp/",filename=f"{video_id}.mp3")
+                return audio_file
+            else:
+                return None
+        except Exception as e:
+            print(f"Error downloading audio: {e}")
+            return None
+
     def analyze_youtube_video(self, question: str) -> Optional[str]:
         """
         Analyze a YouTube video by URL and return its transcript.
@@ -69,13 +88,17 @@ Instructions:
             return None
 
         transcript = self._get_transcript(video_id)
-        if not transcript:
-            print("No transcript available.")
-            return None
-        formatted_transcript = self._format_transcript(transcript)
-        if not formatted_transcript:
-            print("Transcript is empty or not available.")
-            return None
+        if transcript:
+            formatted_transcript = self._format_transcript(transcript)
+
+        else:
+            self._download_youtube_audio(video_id)
+            audio = AudioTool()
+            formatted_transcript = audio.transcribe(f"./tmp/{video_id}.mp3")
+            if not formatted_transcript:
+                print("No transcript available.")
+                return None
+                
         prompt = self.prompt_template.format(
             question=question, transcript=formatted_transcript
         )
