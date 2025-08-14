@@ -57,12 +57,12 @@ class WebSearchTool:
         Returns:
             str: Summary of the Wikipedia page.
         """
-        loader = WikipediaLoader(query=query, load_max_docs=2, doc_content_chars_max=20000)
+        loader = WikipediaLoader(query=query, load_max_docs=2, doc_content_chars_max=10000)
         documents = loader.load()
         if documents:
             return "\n\n".join(f"Document {i}:\n{doc.page_content}" for i, doc in enumerate(documents))
         else:
-            return "No results found on Wikipedia."
+            return f"No results found on Wikipedia for query {query}."
 
     def news_search(self, query: str, start_date: str, end_date: str) -> str:
         """
@@ -70,7 +70,9 @@ class WebSearchTool:
         
         Args:
             query (str): The search query.
-        
+            start_date (str): Start date for the news search in YYYY-MM-DD format.
+            end_date (str): End date for the news search in YYYY-MM-DD format.
+
         Returns:
             str: Summary of the news articles.
         """
