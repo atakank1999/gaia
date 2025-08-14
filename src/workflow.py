@@ -104,10 +104,10 @@ You are the Response Assessor in an AI Agent workflow. Your job is to judge the 
         """
         question = state.get("question")
         res = youtube_transcript_tool.invoke({"question": question})
-        if not question:
+        if res is None:
             return {
                 "messages": [
-                    AIMessage(content="No question provided for YouTube transcript.")
+                    AIMessage(content="No results found for YouTube transcript.")
                 ]
             }
         return {"messages": [AIMessage(content=res)]}
@@ -151,9 +151,28 @@ You are the Response Assessor in an AI Agent workflow. Your job is to judge the 
                     AIMessage(content="No question provided for Wikipedia search.")
                 ]
             }
-
-        res = wikipedia_search.invoke({"question": question})
-        return {"messages": [AIMessage(content=res)]}
+        prompt = PromptTemplate.from_template(
+            """
+Your job is to find the optimal query to search in wikipedia that answers the user's question. Since querying the whole questions might lead to irrelevant results, you should focus on the most important keywords. Do not forget your answer should only include the query no unnecessary context.
+##Inputs
+- USER_QUESTION: {question}
+            """
+        )
+        prompt = prompt.format(question=question)
+        query = self.llm.invoke(prompt)
+        docs = wikipedia_search.invoke({"query": str(query.content)})
+        if docs:
+            prompt = PromptTemplate.from_template(
+                """
+You will be given a user question and a list of documents retrieved from Wikipedia. Your task is to extract the most relevant information from these documents to answer the user's question. Keep your answer concise and focused on the user's query. Don't output unnecessary context just the parts from the documents.
+##Inputs
+- USER_QUESTION: {query}
+- DOCUMENTS RETRIEVED: {docs}
+                """
+            )
+            prompt = prompt.format(query=query, docs=docs)
+            res = self.llm.invoke(prompt)
+            return {"messages": [res]}
 
     def web_search(self, state: GraphState):
         """
@@ -164,8 +183,13 @@ You are the Response Assessor in an AI Agent workflow. Your job is to judge the 
             return {
                 "messages": [AIMessage(content="No question provided for web search.")]
             }
-        search = TavilySearch().invoke({"query": question})
-        return {"messages": [AIMessage(content=search)]}
+        search = TavilySearch()
+        res = self.llm.bind_tools([search]).invoke(question)
+        if res.tool_calls:
+            res = search.invoke(res.tool_calls[0]["args"])
+            res = self.llm.invoke(question + " Search Results: " + str(res))
+
+        return {"messages": [res]}
 
     def select_node(self, state: GraphState):
         class Routes(BaseModel):
@@ -205,7 +229,7 @@ class EdgeConditions:
         """
         Checks if the state is in a condition to fetch a file.
         """
-        return "file_fetcher" if state.get("file_name") is not None else "select_node"
+        return "file_fetcher" if state.get("file_name") else "select_node"
 
     def file_tool_decider(self, state: GraphState) -> str:
         """
@@ -470,11 +494,11 @@ def main():
         questions = json.loads(questions)
     initial_state = GraphState(
         {
-            "messages": [HumanMessage(content=questions[18]["question"])],
+            "messages": [HumanMessage(content=questions[0]["question"])],
             "tool_calls": [],
-            "question": questions[18]["question"],
-            "task_id": questions[18]["task_id"],
-            "file_name": questions[18]["file_name"],
+            "question": questions[2]["question"],
+            "task_id": questions[2]["task_id"],
+            "file_name": questions[2]["file_name"],
             "file_location": None,
         }
     )
