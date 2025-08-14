@@ -57,10 +57,10 @@ class WebSearchTool:
         Returns:
             str: Summary of the Wikipedia page.
         """
-        loader = WikipediaLoader(query=query)
+        loader = WikipediaLoader(query=query, load_max_docs=1, doc_content_chars_max=50000)
         documents = loader.load()
         if documents:
-            return documents[0].page_content
+            return "\n\n".join(f"Document {i}:\n{doc.page_content}" for i, doc in enumerate(documents))
         else:
             return "No results found on Wikipedia."
 
