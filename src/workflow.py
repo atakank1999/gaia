@@ -31,6 +31,8 @@ class GraphState(TypedDict):
     task_id: str
     file_name: Optional[str]
     file_location: Optional[str]
+    max_tries: int
+    retries: int
 
 
 class Nodes:
@@ -72,10 +74,12 @@ You will be given two inputs question and the state of the conversation as conte
         """
         Assess the response from the LLM and decide whether to continue or end the conversation.
         """
+        if state["retries"] >= state["max_tries"]:
+            return {"messages": [AIMessage(content="continue")]}
         last_message = state["messages"][-1]
         prompt_template = PromptTemplate.from_template(
             """
-You are the Response Assessor in an AI Agent workflow. Your job is to judge the AGENT_RESPONSE below and decide the next action. If you find the response satisfactory, you should return "continue". If not, you should return "retry".Evaluate the response based on the correctness, grounding, relevance and completeness of the response. You will be given the context, agent response and the initial user message question as inputs.
+You are the Response Assessor in an AI Agent workflow. Your job is to judge the AGENT_RESPONSE below and decide the next action. If you find the response answers the user question, you should return "continue". If not, you should return "retry".Evaluate the response based on the correctness, grounding, relevance and completeness of the response. You will be given the context, agent response and the initial user message question as inputs.
 ##Inputs
 - AGENT_RESPONSE: {last_message}
 - USER_MESSAGE: {question}
@@ -136,6 +140,28 @@ You are the Response Assessor in an AI Agent workflow. Your job is to judge the 
                     AIMessage(content="No question provided for academic search.")
                 ]
             }
+        prompt = PromptTemplate.from_template(
+            """
+Your job is to find the optimal query to search in academic sources that answers the user's question. Since querying the whole questions might lead to irrelevant results, you should focus on the most important keywords. Do not forget your answer should only include the query no unnecessary context.
+##Inputs
+- USER_QUESTION: {question}
+            """
+        )
+        prompt = prompt.format(question=question)
+        query = self.llm.invoke(prompt)
+        docs = wikipedia_search.invoke({"query": str(query.content)})
+        if docs:
+            prompt = PromptTemplate.from_template(
+                """
+You will be given a user question and a list of documents retrieved from Academic resources. Your task is to extract the most relevant information from these documents to answer the user's question. Keep your answer concise and focused on the user's query. Don't output unnecessary context just the parts from the documents.
+##Inputs
+- USER_QUESTION: {query}
+- DOCUMENTS RETRIEVED: {docs}
+                """
+            )
+            prompt = prompt.format(query=query, docs=docs)
+            res = self.llm.invoke(prompt)
+            return {"messages": [res]}
 
         res = academic_search.invoke({"question": question})
         return {"messages": [AIMessage(content=res)]}
@@ -183,27 +209,39 @@ You will be given a user question and a list of documents retrieved from Wikiped
             return {
                 "messages": [AIMessage(content="No question provided for web search.")]
             }
-        search = TavilySearch()
+        search = TavilySearch(search_depth="advanced")
         res = self.llm.bind_tools([search]).invoke(question)
         if res.tool_calls:
-            res = search.invoke(res.tool_calls[0]["args"])
-            res = self.llm.invoke(question + " Search Results: " + str(res))
+            search_results = search.invoke(res.tool_calls[0]["args"])
+            formatted_search_results = "\n".join([result["content"] for result in search_results["results"]]) # type: ignore
+            prompt = PromptTemplate.from_template(
+                """
+You are a search assistant. Based on the user's question and the search results, generate a concise summary of the most relevant information. Your summary should directly address the user's question and include key details from the search results. Keep your answer short and focused.
+##Inputs
+- USER_QUESTION: {question}
+- SEARCH_RESULTS: {formatted_search_results}
+                """
+            )
+            res = self.llm.invoke(prompt.format(question=question, formatted_search_results=formatted_search_results))
 
         return {"messages": [res]}
 
     def select_node(self, state: GraphState):
+
+        routes = ["news_search", "academic_search", "wikipedia_search", "web_search", "youtube_transcript"]
+        used_routes = []
+        for message in state["messages"]:
+            if message.content in routes:
+                used_routes.append(message.content)
+        if used_routes:
+            routes = [route for route in routes if route not in used_routes]
+
         class Routes(BaseModel):
-            route: Literal[
-                "news_search",
-                "academic_search",
-                "wikipedia_search",
-                "web_search",
-                "youtube_transcript",
-            ]
+            route: Literal[*routes]
 
         llm = self.llm.with_structured_output(Routes)
         prompt = """
-You are a router. Based on the user's question and context, determine the appropriate search route to take. The available routes are: news_search, academic_search, wikipedia_search, web_search, youtube_transcript.
+You are a router. Based on the user's question and context, determine the appropriate search route to take. The available routes are: news_search, academic_search, wikipedia_search, web_search, youtube_transcript. If a route is used before you need to choose another option.
 User question: {question}
 Context: {context}
 """
@@ -494,17 +532,20 @@ def main():
         questions = json.loads(questions)
     initial_state = GraphState(
         {
-            "messages": [HumanMessage(content=questions[0]["question"])],
+            "messages": [HumanMessage(content=questions[4]["question"])],
             "tool_calls": [],
-            "question": questions[2]["question"],
-            "task_id": questions[2]["task_id"],
-            "file_name": questions[2]["file_name"],
+            "question": questions[4]["question"],
+            "task_id": questions[4]["task_id"],
+            "file_name": questions[4]["file_name"],
             "file_location": None,
+            "max_tries": 3,
+            "retries": 0,
         }
     )
     result = workflow.invoke(initial_state)
+    #result = workflow.invoke(initial_state)
     for message in result["messages"]:
-        print(message.content)
+        print(message.pretty_print())
 
 
 if __name__ == "__main__":
