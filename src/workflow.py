@@ -1,7 +1,7 @@
 import os
 from typing import Dict, List, Literal, Optional, TypedDict, cast
 from langchain_tavily import TavilySearch
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing_extensions import Annotated
 from langchain_core.messages import (
     AnyMessage,
@@ -53,18 +53,18 @@ class Nodes:
         Generate an answer based on the question in the state and the context.
         """
         prompt_template = PromptTemplate.from_template(
-"""
-You will be given two inputs question and the state of the conversation as context. To answer the question you need to ground your answer based on the context provided. Keep your answer concise and relevant. If you find the context insufficient, you should ask for clarification.
+            """
+You will be given QUESTION and the state of the conversation as CONTEXT. To answer the question you need to ground your answer based on the context provided. Keep your answer concise and relevant. If you find the context insufficient, you should ask for clarification. If CONTEXT contains list items never remove any item use them as is.
 
 ##Inputs
 - QUESTION: {question}
 - CONTEXT: {context}
 """
-)
+        )
 
         prompt = prompt_template.format(
             question=state["question"],
-            context=state["messages"]
+            context="\n\n".join(message.content for message in state["messages"])
         )
 
         res = self.llm.invoke(prompt)
@@ -77,34 +77,56 @@ You will be given two inputs question and the state of the conversation as conte
         """
         if state["retries"] >= state["max_tries"]:
             return {"messages": [AIMessage(content="continue")]}
-        last_message = state["messages"][-1]
+
+        last_message = state["messages"][-1].content
         prompt_template = PromptTemplate.from_template(
             """
-You are the Response Assessor in an AI Agent workflow. Your job is to judge the AGENT_RESPONSE below and decide the next action. If you find the response answers the user question, you should return "continue". If not, you should return "retry".Evaluate the response based on the correctness, grounding, relevance and completeness of the response. You will be given the context, agent response and the initial user message question as inputs.
-##Inputs
-- AGENT_RESPONSE: {last_message}
-- USER_MESSAGE: {question}
-- CONTEXT: {context}
-            """
+You are a STRICT Response Assessor. Evaluate ONLY the AGENT_RESPONSE against the USER_QUESTION.
+Return "continue" ONLY if the AGENT_RESPONSE contains the answer to the USER_QUESTION correctly and completely. As long as it contains the information answering the question, it is acceptable.
+If it is missing, evasive, says it doesn't know, contains "NA"/"N/A", or likely needs tool use, return "retry".
+
+USER_QUESTION:
+\"\"\"{user_question}\"\"\"
+
+AGENT_RESPONSE:
+\"\"\"{agent_answer}\"\"\"
+
+Rules:
+- If AGENT_RESPONSE says it lacks info or refuses, output "retry".
+
+- Output ONLY one of: continue or retry.
+
+Examples:
+Q: "How many countries are in the EU?"
+A: "According to the provided documents there are 27 countries in EU."       -> continue
+Q: "How many countries are in the EU?"
+A: "I can't find it." -> retry
+Q: "List two prime numbers"
+A: "2 and 3."  -> continue
+Q: "How many books did X write?"
+A: "8."       -> continue
+Q: "How many albums did X release?"
+A: "NA"        -> retry
+Q: "What is the capital of France?"
+A: "Paris."    -> continue
+
+"""
         )
         prompt = prompt_template.format(
-            last_message=last_message,
-            question=state["question"],
-            context=state["messages"][:-1],
+            agent_answer=last_message,
+            user_question=state["question"],
         )
 
         class Response(BaseModel):
-            answer: Literal["continue", "retry"]
+            answer: Literal["retry", "continue"]
 
         structured_llm = self.llm.with_structured_output(Response)
-        response = cast(Response, structured_llm.invoke(prompt))
+        response = structured_llm.invoke(prompt)
         if response.answer == "continue":
-            for root, dirs, files in os.walk("./tmp"):
-                for file in files:
-                    os.remove(os.path.join(root, file))
-            return {"messages": [AIMessage(content="continue")]}
+
+            return {"messages": [AIMessage(content="continue")], "retries": state["retries"]+1}
         else:
-            return {"messages": [AIMessage(content="retry")]}
+            return {"messages": [AIMessage(content="retry")], "retries": state["retries"]+1}
 
     def youtube_transcript(self, state: GraphState):
         """
@@ -130,8 +152,45 @@ You are the Response Assessor in an AI Agent workflow. Your job is to judge the 
                 "messages": [AIMessage(content="No question provided for news search.")]
             }
 
-        res = news_search.invoke({"question": question})
-        return {"messages": [AIMessage(content=res)]}
+        search = news_search
+
+        res = self.llm.bind_tools([search]).invoke(question)
+        if isinstance(res, AIMessage) and hasattr(res, "tool_calls") and res.tool_calls:
+            if (
+                "start_date" in res.tool_calls[0]["args"]
+                and "end_date" in res.tool_calls[0]["args"]
+            ):
+                if (
+                    res.tool_calls[0]["args"]["start_date"]
+                    == res.tool_calls[0]["args"]["end_date"]
+                ):
+                    import datetime
+
+                    # If the start and end date are the same, it means no date range was provided
+                    date = datetime.datetime.strptime(
+                        res.tool_calls[0]["args"]["end_date"], "%Y-%m-%d"
+                    )
+                    date = date + datetime.timedelta(days=1)
+                    date = date.strftime("%Y-%m-%d")
+                    res.tool_calls[0]["args"]["end_date"] = date
+
+            search_results = search.invoke(res.tool_calls[0]["args"])
+            formatted_search_results = "\n".join([result["content"] for result in search_results["results"]])  # type: ignore
+            prompt = PromptTemplate.from_template(
+                """
+You are a search assistant. Based on the user's question and the search results, generate a concise summary of the most relevant information. Your summary should directly address the user's question and include key details from the search results. Keep your answer short and focused.
+##Inputs
+- USER_QUESTION: {question}
+- SEARCH_RESULTS: {formatted_search_results}
+                """
+            )
+            res = self.llm.invoke(
+                prompt.format(
+                    question=question, formatted_search_results=formatted_search_results
+                )
+            )
+
+        return {"messages": [res]}
 
     def academic_search(self, state: GraphState):
         """
@@ -153,7 +212,7 @@ Your job is to find the optimal query to search in academic sources that answers
         )
         prompt = prompt.format(question=question)
         query = self.llm.invoke(prompt)
-        docs = wikipedia_search.invoke({"query": str(query.content)})
+        docs = academic_search.invoke({"query": str(query.content)})
         if docs:
             prompt = PromptTemplate.from_template(
                 """
@@ -191,7 +250,7 @@ Your job is to find the optimal query to search in wikipedia that answers the us
         prompt = prompt.format(question=question)
         query = self.llm.invoke(prompt)
         docs = wikipedia_search.invoke({"query": str(query.content)})
-        if docs:
+        if len(docs)>0:
             prompt = PromptTemplate.from_template(
                 """
 You will be given a user question and a list of documents retrieved from Wikipedia. Your task is to extract the most relevant information from these documents to answer the user's question. Keep your answer concise and focused on the user's query. Don't output unnecessary context just the parts from the documents.
@@ -203,6 +262,8 @@ You will be given a user question and a list of documents retrieved from Wikiped
             prompt = prompt.format(query=query, docs=docs)
             res = self.llm.invoke(prompt)
             return {"messages": [res]}
+        else:
+            return {"messages": [AIMessage(content="No relevant documents found for Wikipedia search.")]}
 
     def web_search(self, state: GraphState):
         """
@@ -215,7 +276,16 @@ You will be given a user question and a list of documents retrieved from Wikiped
             }
         search = TavilySearch(search_depth="advanced")
         res = self.llm.bind_tools([search]).invoke(question)
-        if res.tool_calls:
+        if isinstance(res, AIMessage) and hasattr(res, "tool_calls") and res.tool_calls:
+            if "start_date" in res.tool_calls[0]["args"] and "end_date" in res.tool_calls[0]["args"]:
+                if res.tool_calls[0]["args"]["start_date"] == res.tool_calls[0]["args"]["end_date"]:
+                    import datetime
+                    # If the start and end date are the same, it means no date range was provided
+                    date = datetime.datetime.strptime(res.tool_calls[0]["args"]["end_date"], "%Y-%m-%d")
+                    date = date + datetime.timedelta(days=1)
+                    date = date.strftime("%Y-%m-%d")
+                    res.tool_calls[0]["args"]["end_date"] = date
+
             search_results = search.invoke(res.tool_calls[0]["args"])
             formatted_search_results = "\n".join([result["content"] for result in search_results["results"]]) # type: ignore
             prompt = PromptTemplate.from_template(
@@ -230,6 +300,47 @@ You are a search assistant. Based on the user's question and the search results,
 
         return {"messages": [res]}
 
+    def format_output(self, state: GraphState):
+        class FinalAnswer(BaseModel):
+            final_answer: str = Field(description="Only the minimal final answer.")
+        raw = state["messages"][-2].content
+        user_question = state["question"]
+        structured_llm = self.llm.with_structured_output(FinalAnswer)
+        prompt = """
+    You will receive RAW_OUTPUT (an unformatted answer), CONTEXT(message history) and USER_QUESTION. Find ONLY the minimal final answer value that answers the USER_QUESTION. Your answer should be a number OR as few words as possible OR a comma separated list of numbers and/or strings.If RAW_OUTPUT contains a list of elements never remove elements from the list. Keep the list as is.
+
+    Rules:
+- If your answer is a number, don't use comma to write your number neither use units such as $ or percent sign just output the number unless specified otherwise.
+- If your answer is a string, don't use articles, neither abbreviations (e.g. for cities), and write the digits in plain text unless specified otherwise.
+- If you are asked for a comma separated list, apply the above rules depending of whether the element to be put in the list is a number or a string.
+    Examples:
+    - RAW_OUTPUT: "According to the documents, the population of the USA is three hundred thirty-one million."
+      USER_QUESTION: "What is the population of the USA?"
+      "331000000"
+    - RAW_OUTPUT: "By analyzing the transcript of the video, there are 2 whales in the video"
+      USER_QUESTION: "How many whales found in the video?"
+      "2"
+    - RAW_OUTPUT: "Per the supplied information, AI advancements is the #1 trend topic in Twitter."
+      USER_QUESTION: "What is the #1 trend topic in Twitter?"
+      "AI advancements"
+
+    RAW_OUTPUT:
+    {raw}
+
+    CONTEXT:
+    {context}
+
+    USER_QUESTION:
+    {user_question}
+    """
+        context = "\n\n".join([str(message.content) for message in state["messages"]])
+        prompt = PromptTemplate.from_template(prompt).format(raw=raw, user_question=user_question, context=context)
+        out: FinalAnswer = cast(FinalAnswer, structured_llm.invoke(prompt))
+        for root, dirs, files in os.walk("./tmp"):
+            for file in files:
+                os.remove(os.path.join(root, file))
+        return {"messages": [out.final_answer]}
+
     def select_node(self, state: GraphState):
 
         routes = ["news_search", "academic_search", "wikipedia_search", "web_search", "youtube_transcript"]
@@ -241,7 +352,7 @@ You are a search assistant. Based on the user's question and the search results,
             routes = [route for route in routes if route not in used_routes]
 
         class Routes(BaseModel):
-            route: Literal[*routes]
+            route: Literal[*routes] # type: ignore
 
         llm = self.llm.with_structured_output(Routes)
         prompt = """
@@ -250,7 +361,8 @@ User question: {question}
 Context: {context}
 """
         formatted_prompt = prompt.format(
-            question=state["question"], context=state["messages"][:-1]
+            question=state["question"],
+            context="\n\n".join([message.content for message in state["messages"]]),
         )
         response = cast(Routes, llm.invoke(formatted_prompt))
         return {"messages": [AIMessage(content=response.route)]}
@@ -306,7 +418,7 @@ class EdgeConditions:
         last_message = state.get("messages")[-1]
         if isinstance(last_message, AIMessage) and last_message.content == "retry":
             return "entry"
-        return "END"
+        return "format_output"
 
 
 class ToolNodes:
@@ -380,7 +492,9 @@ class ToolNodes:
     Message History: {messages}
 """
         )
-        formatted_prompt = prompt.format(messages=state["messages"])
+        formatted_prompt = prompt.format(
+            messages="\n\n".join(message.content for message in state["messages"])
+        )
         response = structured_llm.invoke(formatted_prompt)
         response = cast(SpreadSheetTools, response)
         message = AIMessage(
@@ -429,7 +543,7 @@ graph_builder.add_node(
     "generate_answer",
     nodes.generate_answer
 )
-
+graph_builder.add_node("format_output", nodes.format_output)
 graph_builder.add_node(
     "assessment",
     nodes.assess_response,
@@ -512,23 +626,23 @@ graph_builder.add_conditional_edges(
     },
 )
 graph_builder.add_edge(START, "entry")
-graph_builder.add_edge("analyze_audio", "generate_answer")
-graph_builder.add_edge("analyze_spreadsheet", "generate_answer")
-graph_builder.add_edge("query_spreadsheet", "generate_answer")
+graph_builder.add_edge("analyze_audio", "assessment")
+graph_builder.add_edge("analyze_spreadsheet", "assessment")
+graph_builder.add_edge("query_spreadsheet", "assessment")
 graph_builder.add_edge("web_search", "generate_answer")
 graph_builder.add_edge("wikipedia_search", "generate_answer")
 graph_builder.add_edge("youtube_transcript", "generate_answer")
 graph_builder.add_edge("academic_search", "generate_answer")
 graph_builder.add_edge("news_search", "generate_answer")
 graph_builder.add_edge("generate_answer", "assessment")
-
+graph_builder.add_edge("format_output", END)
 graph_builder.add_conditional_edges(
-    "assessment", edge_conditions.assessment_condition, {"entry": "entry", "END": END}
+    "assessment", edge_conditions.assessment_condition, {"entry": "entry", "format_output": "format_output"}
 )
 workflow = graph_builder.compile()
 
 
-def main():
+def main(index):
     import json
 
     with open("questions.json", "r") as f:
@@ -536,13 +650,13 @@ def main():
         questions = json.loads(questions)
     initial_state = GraphState(
         {
-            "messages": [HumanMessage(content=questions[6]["question"])],
+            "messages": [HumanMessage(content=questions[index]["question"])],
             "tool_calls": [],
-            "question": questions[6]["question"],
-            "task_id": questions[6]["task_id"],
-            "file_name": questions[6]["file_name"],
+            "question": questions[index]["question"],
+            "task_id": questions[index]["task_id"],
+            "file_name": questions[index]["file_name"],
             "file_location": None,
-            "max_tries": 3,
+            "max_tries": 2,
             "retries": 0,
         }
     )
@@ -554,4 +668,4 @@ def main():
 
 if __name__ == "__main__":
     # Example of how to invoke the graph
-    main()
+    main(14)
