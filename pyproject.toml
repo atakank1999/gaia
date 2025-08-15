@@ -8,6 +8,7 @@ dependencies = [
     "debugpy>=1.8.15",
     "fastapi[standart]>=0.116.1",
     "gradio>=5.42.0",
+    "ipython>=9.4.0",
     "langchain-community>=0.3.27",
     "langchain-ollama>=0.3.6",
     "langchain-tavily>=0.2.10",
